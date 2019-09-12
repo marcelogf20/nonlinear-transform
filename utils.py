@@ -1,8 +1,10 @@
-
-
 import numpy as np
 from scipy import fftpack
 from torch.utils.data import Dataset
+import os, glob
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from PIL import Image
 
 
 def load_quantization_table(component):
@@ -181,7 +183,7 @@ def compute_psnr(x, y):
     return psnr
 
 
-lass BSDS500Crop128(Dataset):
+class BSDS500Crop128(Dataset):
     def __init__(self, folder_path):
         self.files = sorted(glob.glob('%s/*.*' % folder_path))
         self.transform = transforms.Compose([
@@ -204,20 +206,7 @@ lass BSDS500Crop128(Dataset):
     
     
     
-def kl_divergence(p, q):
-    '''
-    args:
-        2 tensors `p` and `q`
-    returns:
-        kl divergence between the softmax of `p` and `q`
-    '''
 
-    p = F.softmax(p)
-    q = F.softmax(q)
-
-    s1 = torch.sum(p * torch.log(p / q))
-    s2 = torch.sum((1 - p) * torch.log((1 - p) / (1 - q)))
-    return s1 + s2
 
 
 

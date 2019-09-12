@@ -1,8 +1,7 @@
 from torch import nn
 import torch
 from utils import *
-
-
+from network import *
 
 dataset_path = 'imagens_teste2/'
 output_file = 'mytest2.png'

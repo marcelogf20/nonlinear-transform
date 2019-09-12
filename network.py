@@ -2,6 +2,7 @@
 
 import torch.nn.functional as F
 from torch import nn
+import torch
 
 class DCT_nonlinear(nn.Module):    
     def __init__(self):
@@ -84,19 +85,6 @@ class DCT_nonlinear(nn.Module):
         y = self.tanh(y)
         #y = F.relu(y)
         #y = self.lr1(y)
-        
-        
-        tensor_weights = torch.zeros([4,1,8,8], dtype=torch.float32)
-        
-        for bs in range (4):
-            for i in range(8):
-                for j in range(8):        
-                    if i == 0 and j == 0:
-                        tensor_weights[bs,0,i,j] =10
-                    elif j==0:
-                        tensor_weights[bs,0,i,j] = tensor_weights[bs,0,i-1,7]*9/10
-                    else:   
-                        tensor_weights[bs,0,i,j] = tensor_weights[bs,0,i,j-1]*9/10
 
         return y #*tensor_weights
         
@@ -180,4 +168,17 @@ class IDCT_nonlinear(nn.Module):
         #y = self.lr3(y)
         
         return y
+def kl_divergence(p, q):
+    '''
+    args:
+        2 tensors `p` and `q`
+    returns:
+        kl divergence between the softmax of `p` and `q`
+    '''
 
+    p = F.softmax(p)
+    q = F.softmax(q)
+
+    s1 = torch.sum(p * torch.log(p / q))
+    s2 = torch.sum((1 - p) * torch.log((1 - p) / (1 - q)))
+    return s1 + s2
