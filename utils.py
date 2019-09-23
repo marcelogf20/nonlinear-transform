@@ -7,6 +7,45 @@ from torch.utils.data import DataLoader
 from PIL import Image
 
 
+def l1_norm (latente):
+    l1_loss = torch.norm(latente, p=1)
+    return l1_loss
+
+def l1_norm_weights2(model):
+    l1_regularization=0
+    for param in model.parameters():
+        l1_regularization = l1_regularization + torch.norm(param, p=1)
+    return l1_regularization
+
+def l2_norm (latente):
+    euclidead_norm= torch.norm(latente, p=2)
+    return euclidead_norm
+
+def weights_norm(batch_size,block_size,latente, norm):
+    tensor_weights = torch.zeros([batch_size,3,8,8], dtype=torch.float32)
+    for bs in range (batch_size):
+        for i in range(block_size):
+            for j in range(block_size):        
+                if i == 0 and j == 0:
+                    tensor_weights[bs,:,i,j] =10e-6
+                elif j==0:
+                    tensor_weights[bs,:,i,j] = tensor_weights[bs,0,i-1,7]*12/10
+                else:   
+                    tensor_weights[bs,:,i,j] = tensor_weights[bs,0,i,j-1]*12/10
+    loss_coef = torch.norm(latente*tensor_weights, p=type )
+    return loss_coef
+
+def kl_divergence(p, q):
+    
+    p = torch.FloatTensor([p for _ in range(q.shape[0])]).unsqueeze(0)   
+    funcs  = nn.Sigmoid()
+    p  = funcs(p)
+    q  = funcs(q)
+    s1 = torch.sum(p * torch.log(p / q))
+    s2 = torch.sum((1 - p) * torch.log((1 - p) / (1 - q)))
+    kl_div = s1 + s2 
+    return kl_div
+
 def load_quantization_table(component):
     # Quantization Table for: Photoshop - (Save For Web 080)
     # (http://www.impulseadventure.com/photo/jpeg-quantization.html)
@@ -204,9 +243,34 @@ class BSDS500Crop128(Dataset):
     def __len__(self):
         return len(self.files)
     
+def transform_data(size_p):       
+    train_transform = transforms.Compose([
+    transforms.RandomCrop((size_p, size_p)),
+    transforms.ToTensor(),])    
+    return train_transform
+
+class ImageFolderYCbCr(Dataset):
+    """ ImageFolder can be used to load images where there are no labels."""
+
+    def __init__(self, root, transform=None):
+        images = []
+        for filename in os.listdir(root):
+            for files in glob.glob('%s/*.*' % (root+'/'+filename)): 
+                images.append(files)
+
+        self.root = root
+        self.imgs = images
+        self.transform = transform
+
+    def __getitem__(self, index):
+        path  = self.imgs[index]
+        img   = Image.open(path)
+        ycbcr = img.convert('YCbCr')
+        #ycbcr = np.array(ycbcr)
+        if self.transform is not None:
+            ycbcr = self.transform(ycbcr)
     
-    
+        return ycbcr
 
-
-
-
+    def __len__(self):
+        return len(self.imgs)
