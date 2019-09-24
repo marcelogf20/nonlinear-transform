@@ -5,7 +5,7 @@ import os, glob
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from PIL import Image
-
+import torch
 
 def l1_norm (latente):
     l1_loss = torch.norm(latente, p=1)
@@ -18,22 +18,24 @@ def l1_norm_weights2(model):
     return l1_regularization
 
 def l2_norm (latente):
-    euclidead_norm= torch.norm(latente, p=2)
+    euclidead_norm = torch.norm(latente, p=2)
     return euclidead_norm
 
-def weights_norm(batch_size,block_size,latente, norm):
+def weights_norm(batch_size,block_size,latent, norm):
     tensor_weights = torch.zeros([batch_size,3,8,8], dtype=torch.float32)
     for bs in range (batch_size):
         for i in range(block_size):
             for j in range(block_size):        
                 if i == 0 and j == 0:
-                    tensor_weights[bs,:,i,j] =10e-6
+                    tensor_weights[bs,:,i,j] = 1e-2
                 elif j==0:
                     tensor_weights[bs,:,i,j] = tensor_weights[bs,0,i-1,7]*12/10
                 else:   
                     tensor_weights[bs,:,i,j] = tensor_weights[bs,0,i,j-1]*12/10
-    loss_coef = torch.norm(latente*tensor_weights, p=type )
-    return loss_coef
+    prod = latent * tensor_weights.cuda()
+    weights_loss = torch.norm(prod, p=norm)
+
+    return weights_loss,prod
 
 def kl_divergence(p, q):
     
@@ -45,6 +47,38 @@ def kl_divergence(p, q):
     s2 = torch.sum((1 - p) * torch.log((1 - p) / (1 - q)))
     kl_div = s1 + s2 
     return kl_div
+
+def loss_kl(dist_val,latent):
+    latente = latente.view(-1)
+    loss  = kl_divergence(dist_val, latente).clone()   
+    return loss
+
+def save(index, op, path_save,mydct, myidct,optimizer,scheduler):
+    if not os.path.exists(path_save):
+        os.mkdir(path_save)
+    torch.save(mydct.state_dict(),path_save+'/dctNN_{}_{}.pth'.format(op, index))
+    torch.save(myidct.state_dict(),path_save+'/idctNN_{}_{}.pth'.format(op, index))
+    torch.save(optimizer.state_dict(), path_save+'/optimizer_{}_{}.pth'.format(op, index))
+    torch.save(scheduler.state_dict(), path_save+'/scheduler_{}_{}.pth'.format(op, index))
+    
+    
+def load(op, num, path_load, mydct, myidct, optimizer, scheduler):
+
+    mydct.load_state_dict(torch.load(path_load+'/dctNN_{}_{}.pth'.format(op, num)))
+    myidct.load_state_dict(torch.load(path_load+'/idctNN_{}_{}.pth'.format(op, num)))
+    optimizer.load_state_dict(torch.load(path_load+'/optimizer_{}_{}.pth'.format(op, num)))
+    scheduler.load_state_dict(torch.load(path_load+'/scheduler_{}_{}.pth'.format(op, num)))
+    
+    return mydct,myidct, optimizer,scheduler
+
+def compute_psnr(x, y):
+    y = y.view(y.shape[0], -1)
+    x = x.view(x.shape[0], -1)
+    rmse = torch.sqrt(torch.mean((y - x) ** 2, dim=1))
+    psnr = torch.mean(20. * torch.log10(1. / rmse))
+    return psnr
+
+
 
 def load_quantization_table(component):
     # Quantization Table for: Photoshop - (Save For Web 080)
@@ -196,49 +230,18 @@ def idct_2d(image):
     return fftpack.idct(fftpack.idct(image.T, norm='ortho').T, norm='ortho')
 
 
-def save(index, op, path_save,mydct, myidct,optimizer,scheduler):
-    if not os.path.exists(path_save):
-        os.mkdir(path_save)
-    torch.save(mydct.state_dict(),path_save+'/dctNN_{}_{}.pth'.format(op, index))
-    torch.save(myidct.state_dict(),path_save+'/idctNN_{}_{}.pth'.format(op, index))
-    torch.save(optimizer.state_dict(), path_save+'/optimizer_{}_{}.pth'.format(op, index))
-    torch.save(scheduler.state_dict(), path_save+'/scheduler_{}_{}.pth'.format(op, index))
-    
-    
-def load(op, num, path_load, mydct, myidct, optimizer, scheduler):
-
-    mydct.load_state_dict(torch.load(path_load+'/dctNN_{}_{}.pth'.format(op, num)))
-    myidct.load_state_dict(torch.load(path_load+'/idctNN_{}_{}.pth'.format(op, num)))
-    optimizer.load_state_dict(torch.load(path_load+'/optimizer_{}_{}.pth'.format(op, num)))
-    scheduler.load_state_dict(torch.load(path_load+'/scheduler_{}_{}.pth'.format(op, num)))
-    
-    return mydct,myidct, optimizer,scheduler
-
-def compute_psnr(x, y):
-    y = y.view(y.shape[0], -1)
-    x = x.view(x.shape[0], -1)
-    rmse = torch.sqrt(torch.mean((y - x) ** 2, dim=1))
-    psnr = torch.mean(20. * torch.log10(1. / rmse))
-    return psnr
-
-
 class BSDS500Crop128(Dataset):
-    def __init__(self, folder_path):
-        self.files = sorted(glob.glob('%s/*.*' % folder_path))
-        self.transform = transforms.Compose([
-            transforms.RandomCrop(16),
-            #transforms.RandomHorizontalFlip(),
-            #transforms.RandomVerticalFlip(),
-            transforms.ToTensor()
-        ])
+    def __init__(self, folder_path, transform=None):
+        self.files = sorted(glob.glob('%s/*.*' % folder_path)) 
+        self.transform = transform
 
     def __getitem__(self, index):
-        
         path  = self.files[index % len(self.files)]
         img   = Image.open(path)
         ycbcr = img.convert('YCbCr')
-        npmat = np.array(ycbcr, dtype=np.uint8)
-        return npmat
+        if self.transform is not None:
+            ycbcr = self.transform(ycbcr)
+        return ycbcr
 
     def __len__(self):
         return len(self.files)
@@ -249,11 +252,13 @@ def transform_data(size_p):
     transforms.ToTensor(),])    
     return train_transform
 
+
 class ImageFolderYCbCr(Dataset):
     """ ImageFolder can be used to load images where there are no labels."""
 
     def __init__(self, root, transform=None):
         images = []
+
         for filename in os.listdir(root):
             for files in glob.glob('%s/*.*' % (root+'/'+filename)): 
                 images.append(files)

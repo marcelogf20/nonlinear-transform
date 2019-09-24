@@ -3,40 +3,42 @@ import torch
 from utils import *
 from network import *
 
-dataset_path = 'imagens_teste2/'
-output_file = 'mytest2.png'
+
+path_model = 'checkpoint/exp1/'
+dataset_path = '/media/data/Datasets/samsung/database4/dir0'
+path_save  = '/media/data/Datasets/samsung/modelos/nonlinear-transform/exp1'
+beta = 5e-11
 lr = 1e-4
-path_save = 'checkpoint/exp4/'
 batch_size = 4
-path_load = 'checkpoint/exp4/'
+block_size = 8
+
 op='epoch'
-num = 0
-last_epoch = num
-num_epochs = 300
-shuffle = True
-num_workers = 6
-patience   = 200
-save_every = 200
+load_op      = False
+last_epoch   = 0
+num_epochs   = 1
+shuffle      = True
+num_workers  = 6
+patience     = 1
+save_every   = 2.756e7
 factor_decay = 0.5 
-beta = 1e-3
 
-def main(dataset_path,output_file,lr,batch_size,path_save,path_load,op,num,last_epoch,num_epochs,shuffle,
-    num_workers,patience,factor_decay,save_every,size_patch,beta):
- 
-    mse_loss = nn.MSELoss()
-    mydct = DCT_nonlinear()
-    myidct = DCT_nonlinear()
-    block_side = 8      
 
-    mydct.to(torch.float)
-    myidct.to(torch.float)
+def main(dataset_path,lr,batch_size,path_save,path_model,op,load_op,last_epoch,num_epochs,shuffle,
+    num_workers,patience,factor_decay,save_every,beta,block_size):
+
+    mse_loss = nn.MSELoss().cuda()
+    mydct = DCT_nonlinear().cuda()
+    th  = Threshold().cuda()
+
+    myidct = DCT_nonlinear().cuda()
     
-    
+    #mydct.to(torch.float)
+    #myidct.to(torch.float)
+        
     adam = torch.optim.Adam([{'params': mydct.parameters()},
                          {'params': myidct.parameters()},],lr=lr)
     
     optimizer = adam
-    
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
@@ -45,33 +47,36 @@ def main(dataset_path,output_file,lr,batch_size,path_save,path_load,op,num,last_
         verbose=True,
         )    
     
-    if num:
-        mydct,myidct,optimizer,scheduler2 = load(op,num, path_load, mydct, myidct,optimizer,scheduler)
+    if load_op:
+        mydct,myidct,optimizer,scheduler2 = load(op,last_epoch, path_model, mydct, myidct,optimizer,scheduler)
         print('Model loaded')
     losses_distortion = []
     losses_sparse = []
     losses =[]
 
-    train_transform = transform_data(size_patch);
-    dataset = ImageFolderYCbCr(dataset_path,train_transform)
-    dataloader = DataLoader(dataset,batch_size=batch_size,shuffle=shuffle,num_workers=num_workers)
-        
+    train_transform = transform_data(block_size)
+    dataset = BSDS500Crop128(dataset_path,train_transform)
+   
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,num_workers=num_workers)
+    print(len(dataset),' ', len(dataloader))
+    
     for ei in range(last_epoch+1, num_epochs+last_epoch+1):
-        for bi, image_ycbcr in enumerate(dataloader):
-            
-            batch_size, channels, rows, cols = patches.size()
+        for bi, input in enumerate(dataloader):
+            input = input.cuda()
+            batch_size, channels, rows, cols = input.size()
             number_batch = 0
             block_index = 0
 
-            latent = mydct(image_ycbcr)
-            blk_recons = myidct(latent)  
+            latent = mydct(input)
+            #latent = th(latent)
+            output = myidct(latent)  
             
-            distortion_loss  = mse_loss(yuv_batch, blk_recons)  
-            sparsity_penalty = beta * l1_norm(latent)
-            loss = distortion_loss + sparsity_penalty
+            distortion_loss  = mse_loss(input, output)
+  
+            sparsity_loss, prod = weights_norm(batch_size,block_size,latent,1)
+            sparsity_loss  = sparsity_loss*beta
 
-            losses_distortion.append(loss_mse.data.tem())
-            losses_sparse.append(sparsity_penalty.data.tem())
+            loss = distortion_loss + sparsity_loss
             losses.append(loss.data.item())                 
             
             a = list(mydct.parameters())[0].clone()
@@ -86,22 +91,23 @@ def main(dataset_path,output_file,lr,batch_size,path_save,path_load,op,num,last_
                 print('equal mydct ')
             if torch.equal(a2.data, b2.data):
                 print('equal myidct')
-    
-    
+            if bi%save_every == 0:
+                save(bi,'iter', path_save,mydct,myidct, optimizer,scheduler)
+            if bi%400 == 0:
+               print('prod',prod[0])
+               print('latente[0]',latent[0])
+               zeros = torch.sum(latent == 0).data.item()
+               total = latent.numel()
+               psrn = compute_psnr(input,output)
+               print(distortion_loss.data.item(),sparsity_loss.data.item() )
+               print('\n Época/Batch [{}]/[{}] loss distortion {:.4f}, loss sparsity {:.6f}, loss média {:.4f}'.format(ei,bi,distortion_loss.data.item(),
+                                                                                                                  sparsity_loss.data.item(),loss.data.item()))
+               print('Last batch: PSNR {:.3f}, taxa de zeros {:.3f}'.format(psrn.data.item(), 1e2*zeros/total))
+
+        save(ei,'epoch', path_save,mydct,myidct, optimizer,scheduler)	
+
         scheduler.step(np.mean(losses))
-        zeros = torch.sum(latente == 0).data.item()
-        total = latente.numel()
-        psrn = compute_psnr(yuv_batch, blk_recons)
-        
-        print('\n Época [{}] loss distortion {:.4f}, loss sparsity {:.4f}, loss média {.:4f}'.
-              format(np.mean(losses_distortion), np.mean(losses_distortion), np.mean(losses)))
-        print('Last batch: PSNR {:.3f}, taxa de zeros {:.3f}'.format(psrn.data.item(),  1e2*zeros/total))
-                
-        if ei % save_every == 0:
-            save(ei,'epoch', path_save,mydct,myidct, optimizer,scheduler)
 
 
-
-main(dataset_path, output_file,lr,batch_size,path_save,path_load,op,num,last_epoch,num_epochs,
-     shuffle,num_workers,patience,factor_decay,save_every,beta)
-
+main(dataset_path,lr,batch_size,path_save,path_model, op, load_op, last_epoch,num_epochs,
+    shuffle,num_workers,patience,factor_decay,save_every, beta, block_size)
